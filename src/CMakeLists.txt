@@ -8,6 +8,7 @@ target_link_libraries(
   Boost::program_options
   Microsoft.GSL::GSL
   OpenSSL::SSL
+  nghttp2_asio
 #  PRIVATE CLI11::CLI11 fmt::fmt spdlog::spdlog
 )
 
