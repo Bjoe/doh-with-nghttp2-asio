@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.16...3.23)
+﻿cmake_minimum_required(VERSION 3.16...3.23)
 
 cmake_policy(SET CMP0135 NEW)
 
@@ -128,9 +128,17 @@ target_compile_features(project_options INTERFACE cxx_std_${CMAKE_CXX_STANDARD})
 add_library(myproject::project_options INTERFACE IMPORTED)
 add_library(myproject::project_warnings INTERFACE IMPORTED)
 
-find_package(Boost REQUIRED) # COMPONENTS headers program_options thread log) <- How this can be used in Conan 2.0 ?
+find_package(Boost REQUIRED) # COMPONENTS headers program_options thread log) # <- How this can be used in Conan 2.0 ?
 find_package(Microsoft.GSL REQUIRED)
 find_package(OpenSSL REQUIRED)
+find_package(libnghttp2 REQUIRED)
+
+# It'a a dirt hack because of conan 2.0 !
+set(Boost_thread_FOUND true CACHE BOOL "" FORCE) # <- nghttp2-asion use COMPONENTS but it's not working with conan 2.0 ... How this can be used in Conan 2.0 ?
+set(Boost_system_FOUND true CACHE BOOL "" FORCE) # <- nghttp2-asion use COMPONENTS but it's not working with conan 2.0 ... How this can be used in Conan 2.0 ?
+
+FetchContent_Declare(nghttp2-asio URL https://github.com/nghttp2/nghttp2-asio/archive/refs/heads/main.zip)
+FetchContent_MakeAvailable(nghttp2-asio)
 
 # configure files based on CMake configuration options
 add_subdirectory(configured_files)
