@@ -22,6 +22,11 @@
 #include <boost/preprocessor/seq/size.hpp>
 #include <boost/preprocessor/seq/seq.hpp>
 
+#include <boost/archive/iterators/base64_from_binary.hpp>
+#include <boost/archive/iterators/binary_from_base64.hpp>
+#include <boost/archive/iterators/transform_width.hpp>
+#include <boost/algorithm/string.hpp>
+#include <boost/algorithm/string/replace.hpp>
 
 #define ENUM_CLASS(name, values)                               \
 enum name {                              \
@@ -57,9 +62,48 @@ constexpr const static int RD_FIELD = 7;
 constexpr const static int RA_FIELD = 8;
 constexpr const static int OPCODE_FIELD = 11;
 constexpr const static unsigned short PORT = 443;
+constexpr const static unsigned short PROXY_PORT = 8080;
 constexpr const static char* DOH_URI = "/dns-query";
 
+
+ENUM_CLASS(Type,
+  ((GET))
+  ((POST))
+)
+
 namespace {
+std::string Base64UrlEncode(const std::string& input) {
+  using namespace boost::archive::iterators;
+  using It = base64_from_binary<transform_width<std::string::const_iterator, 6, 8>>;
+  auto base64 = std::string(It(std::begin(input)), It(std::end(input)));
+
+        // Replace characters according to Base64url standard
+  boost::replace_all(base64, "+", "-");
+  boost::replace_all(base64, "/", "_");
+  boost::replace_all(base64, "=", "");
+
+  return base64;
+}
+
+std::string Base64UrlDecode(const std::string& input) {
+  using namespace boost::archive::iterators;
+  using namespace boost::archive::iterators;
+  using It = transform_width<binary_from_base64<std::string::const_iterator>, 8, 6>;
+
+  std::string base64url = input;
+  // Replace characters back to standard Base64
+  boost::replace_all(base64url, "-", "+");
+  boost::replace_all(base64url, "_", "/");
+  // Add padding if necessary
+  while (base64url.length() % 4 != 0)
+    base64url += "=";
+
+
+  return boost::algorithm::trim_right_copy_if(std::string(It(std::begin(base64url)), It(std::end(base64url))), [](char c) {
+    return c == '\0';
+  });
+}
+
 // Function to combine two uint8_ts into a uint16_t
 std::uint16_t combineBytes(std::uint8_t highByte, std::uint8_t lowByte) {
     return static_cast<std::uint16_t>((static_cast<std::uint16_t>(highByte)) << 8) | (lowByte & 0xff);
@@ -88,10 +132,23 @@ std::tuple<std::vector<std::uint8_t>, std::size_t> parseDomain(const std::vector
 
 }
 
+std::istream& operator>>(std::istream& in, Type& options)
+{
+    std::string token;
+    in >> token;
+    if (token == format_Type(GET))
+        options = Type::GET;
+    else if (token == format_Type(POST))
+        options = Type::POST;
+    else
+        in.setstate(std::ios_base::failbit);
+    return in;
+}
+
 // OPCODE          A four bit field that specifies kind of query in this
 //                 message.  This value is set by the originator of a query
 //                 and copied into the response.  The values are:
-ENUM_CLASS(OPCODE,
+ENUM_CLASS(OPCode,
     ((QUERY)(0))      // 0               a standard query (QUERY)
     ((IQUERY))        // 1               an inverse query (IQUERY)
     ((STATUS))        // 2               a server status request (STATUS)
@@ -101,7 +158,7 @@ ENUM_CLASS(OPCODE,
 // TC              TrunCation - specifies that this message was truncated
 //                 due to length greater than that permitted on the
 //                 transmission channel.
-ENUM_CLASS(TC,
+ENUM_CLASS(Tc,
     ((NO_TRUNCATION)(0))
     ((TRUNCATION))
 )
@@ -110,7 +167,7 @@ ENUM_CLASS(TC,
 //                 is copied into the response.  If RD is set, it directs
 //                 the name server to pursue the query recursively.
 //                 Recursive query support is optional.
-ENUM_CLASS(RD,
+ENUM_CLASS(Rd,
     ((NO_RECURSION_DESIRED)(0))
     ((RECURSION_DESIRED))
 )
@@ -118,7 +175,7 @@ ENUM_CLASS(RD,
 // RA              Recursion Available - this be is set or cleared in a
 //                 response, and denotes whether recursive query support is
 //                 available in the name server.
-ENUM_CLASS(RA,
+ENUM_CLASS(Ra,
     ((NO_RECURSION_AVAILABLE)(0))
     ((RECURSION_AVAILABLE))
 )
@@ -126,7 +183,7 @@ ENUM_CLASS(RA,
 // RCODE           Response code - this 4 bit field is set as part of
 //                 responses.  The values have the following
 //                 interpretation:
-ENUM_CLASS(RCODE,
+ENUM_CLASS(RCode,
 ((NO_ERROR)(0))         //    0               No error condition
 ((FORMAT_ERROR))        //    1               Format error - The name server was
                         //                    unable to interpret the query.
@@ -201,19 +258,19 @@ public:
         return arCount_;
     }
 
-    OPCODE queryType() const {
+    OPCode queryType() const {
         std::uint16_t opCode = flags_ >> OPCODE_FIELD;
-        return static_cast<OPCODE>(opCode);
+        return static_cast<OPCode>(opCode);
     }
 
-    RA recursionAvailable() const {
+    Ra recursionAvailable() const {
         std::uint16_t ravailable = flags_ >> RD_FIELD;
-        return static_cast<RA>(ravailable);
+        return static_cast<Ra>(ravailable);
     }
 
-    RCODE responseCode() const {
+    RCode responseCode() const {
         std::uint16_t rcode = flags_ >> RCODE_FIELD;
-        return static_cast<RCODE>(rcode & 0x000F);
+        return static_cast<RCode>(rcode & 0x000F);
     }
 
     std::vector<std::uint8_t> data() const {
@@ -247,9 +304,9 @@ class DNSHeader::Builder {
 public:
     DNSHeader::Builder& identifier(std::uint16_t identifier) { id_ = identifier; return *this; }
     DNSHeader::Builder& numberOfQuestions(std::uint16_t count) { qdCount_ = htons(count); return *this; }
-    DNSHeader::Builder& specifiesQuery(OPCODE opcode)  { opcode_ = opcode; return *this; }
-    DNSHeader::Builder& recursionDesired(RD recursion) { rd_ = recursion; return *this; }
-    DNSHeader::Builder& truncation(TC truncation) { tc_ = truncation; return *this; }
+    DNSHeader::Builder& specifiesQuery(OPCode opcode)  { opcode_ = opcode; return *this; }
+    DNSHeader::Builder& recursionDesired(Rd recursion) { rd_ = recursion; return *this; }
+    DNSHeader::Builder& truncation(Tc truncation) { tc_ = truncation; return *this; }
 
     DNSHeader build() const {
         std::uint16_t flags{};
@@ -264,9 +321,9 @@ public:
 private:
     std::uint16_t id_{};
     std::uint16_t qdCount_{1};
-    OPCODE opcode_{OPCODE::QUERY};
-    RD rd_{RD::RECURSION_DESIRED};
-    TC tc_{TC::NO_TRUNCATION};
+    OPCode opcode_{OPCode::QUERY};
+    Rd rd_{Rd::RECURSION_DESIRED};
+    Tc tc_{Tc::NO_TRUNCATION};
 };
 
 // 3.2.2. TYPE values
@@ -276,7 +333,7 @@ private:
 //
 // https://datatracker.ietf.org/doc/html/rfc1035#section-3.2.2
 //
-ENUM_CLASS(QTYPE,
+ENUM_CLASS(QType,
     ((A)(1))//              1 a host address
     ((NS)) //              2 an authoritative name server
     ((MD)) //              3 a mail destination (Obsolete - use MX)
@@ -307,7 +364,7 @@ ENUM_CLASS(QTYPE,
 //                                                      following QTYPEs are defined:
 // https://datatracker.ietf.org/doc/html/rfc1035#section-3.2.3
 //
-ENUM_CLASS(QCLASS,
+ENUM_CLASS(QCLass,
     ((IN)(1)) //           1 the Internet
     ((CS)) //              2 the CSNET class (Obsolete - used only for examples in
                //            some obsolete RFCs)
@@ -319,8 +376,8 @@ ENUM_CLASS(QCLASS,
 class DNSQuery {
 public:
     DNSQuery(std::vector<uint8_t> qname,
-             QTYPE qtype,
-             QCLASS qclass) :
+             QType qtype,
+             QCLass qclass) :
         qname_{std::move(qname)},
         qtype_{qtype},
         qclass_{qclass}
@@ -349,8 +406,8 @@ public:
         auto result = parseDomain(data);
         qname_ = std::get<0>(result);
         std::size_t offset = std::get<1>(result);
-        qtype_ = static_cast<QTYPE>(combineBytes(data.at(offset), data.at(offset + 1)));
-        qclass_ = static_cast<QCLASS>(combineBytes(data.at(offset + 2), data.at(offset + 3)));
+        qtype_ = static_cast<QType>(combineBytes(data.at(offset), data.at(offset + 1)));
+        qclass_ = static_cast<QCLass>(combineBytes(data.at(offset + 2), data.at(offset + 3)));
         return offset + 4;
     }
 
@@ -369,15 +426,15 @@ public:
 
 private:
     std::vector<std::uint8_t> qname_{};
-    QTYPE qtype_{};
-    QCLASS qclass_{};
+    QType qtype_{};
+    QCLass qclass_{};
 };
 
 class DNSQuery::Builder {
 public:
     DNSQuery::Builder& domainname(std::string qname) { qname_ = std::move(qname); return *this; }
-    DNSQuery::Builder& typeOfQuery(QTYPE qtype) { qtype_ = qtype; return *this; }
-    DNSQuery::Builder& classOfQuery(QCLASS qclass) { qclass_= qclass; return *this; }
+    DNSQuery::Builder& typeOfQuery(QType qtype) { qtype_ = qtype; return *this; }
+    DNSQuery::Builder& classOfQuery(QCLass qclass) { qclass_= qclass; return *this; }
 
 
     DNSQuery build() const
@@ -401,8 +458,8 @@ public:
 
 private:
     std::string qname_{};
-    QTYPE qtype_{QTYPE::A};
-    QCLASS qclass_{QCLASS::IN};
+    QType qtype_{QType::A};
+    QCLass qclass_{QCLass::IN};
 
 };
 
@@ -429,8 +486,8 @@ public:
             qname_ = std::get<0>(result);
             offset = std::get<1>(result);
         }
-        qtype_ = static_cast<QTYPE>(combineBytes(data.at(offset), data.at(offset + 1)));
-        qclass_ = static_cast<QCLASS>(combineBytes(data.at(offset + 2), data.at(offset + 3)));
+        qtype_ = static_cast<QType>(combineBytes(data.at(offset), data.at(offset + 1)));
+        qclass_ = static_cast<QCLass>(combineBytes(data.at(offset + 2), data.at(offset + 3)));
 
         std::uint16_t ttlHigh = combineBytes(data.at(offset + 4), data.at(offset + 5));
         std::uint16_t ttlLow = combineBytes(data.at(offset + 6), data.at(offset + 7));
@@ -439,7 +496,7 @@ public:
         rdLength_ = combineBytes(data.at(offset + 8), data.at(offset + 9));
 
         switch(qtype_) {
-        case QTYPE::A:
+        case QType::A:
         {
             rdata_.append(std::to_string(data.at(offset + 10)));
             rdata_.append(".");
@@ -451,7 +508,7 @@ public:
         }
         break;
         default:
-            std::cout << "Type " << format_QTYPE(qtype_) << " not implemented yet!\n";
+            std::cout << "Type " << format_QType(qtype_) << " not implemented yet!\n";
             break;
         }
 
@@ -460,8 +517,8 @@ public:
 
 private:
      std::vector<std::uint8_t> qname_{};
-    QTYPE qtype_{QTYPE::A};
-    QCLASS qclass_{QCLASS::IN};
+    QType qtype_{QType::A};
+    QCLass qclass_{QCLass::IN};
     std::uint32_t ttl_{};
     std::uint16_t rdLength_{};
 
@@ -476,13 +533,18 @@ int main(int argc, char* argv[])
     try
     {
         desc.add_options()
-            ("help,h", "Help screen")
-            ("dnsip,i", boost::program_options::value<std::string>()->required(), "IP from DoH DNS server")
-            ("dnsdomain,n", boost::program_options::value<std::string>()->required(), "DNS domain name")
-            ("dnsport,p", boost::program_options::value<unsigned short>()->default_value(PORT), "DNS DoH port")
-            ("domain,d", boost::program_options::value<std::string>()->required(), "Domain name to resolv")
-            ("uri,u", boost::program_options::value<std::string>()->default_value(DOH_URI), "DNS URI query")
-            ;
+          ("help,h", "Help screen")
+          ("dnsip,i", boost::program_options::value<std::string>()->required(), "IP from DoH DNS server")
+          ("dnsdomain,n", boost::program_options::value<std::string>()->required(), "DNS domain name")
+          ("dnsport,p", boost::program_options::value<unsigned short>()->default_value(PORT), "DNS DoH port")
+          ("domain,d", boost::program_options::value<std::string>()->required(), "Domain name to resolv")
+          ("uri,u", boost::program_options::value<std::string>()->default_value(DOH_URI), "DNS URI query")
+          ("proxy,y", boost::program_options::value<std::string>(), "Proxy server")
+          ("proxyport,o", boost::program_options::value<unsigned short>()->default_value(PROXY_PORT), "Proxy port")
+          ("proxyuser,u", boost::program_options::value<std::string>(), "Proxy user")
+          ("proxypasswd,w", boost::program_options::value<std::string>(), "Proxy password")
+          ("type,t", boost::program_options::value<Type>()->required(), "GET or POST")
+          ;
 
         boost::program_options::variables_map variables_map;
         store(parse_command_line(argc, argv, desc), variables_map);
@@ -507,37 +569,96 @@ int main(int argc, char* argv[])
         auto uri = variables_map["uri"].as<std::string>();
 
         net::io_context ioc;
+        tcp::socket socket{ioc};
+
         ssl::context ctx(ssl::context::tlsv12_client);
 
-        ssl::stream<tcp::socket> stream(ioc, ctx);
+        if(variables_map.count("proxy") != 0U) {
+            auto proxy = variables_map["proxy"].as<std::string>();
+            auto pport = variables_map["proxyport"].as<unsigned short>();
 
-        //tcp::resolver resolver(ioc);
-        //const tcp::resolver::results_type endpoints = resolver.resolve("dns.google", "https");
-        //net::connect(stream.next_layer(), endpoints);
+            socket.connect({boost::asio::ip::address_v4::from_string(proxy), pport});
+        }
 
+        ssl::stream<tcp::socket&> stream(socket, ctx);
 
         auto dnsEndpoint = boost::asio::ip::tcp::endpoint{boost::asio::ip::address::from_string(dnsip), dnsport};
-        stream.next_layer().connect(dnsEndpoint);
+
+        if(variables_map.count("proxy") != 0U) {
+            if(variables_map.count("proxyuser")) {
+                //auto user = variables_map["proxyuser"].as<std::string>();
+                //auto psswd = variables_map["proxypasswd"].as<std::string>();
+
+                throw std::system_error(ENOTSUP, std::generic_category(), "Proxy authentification not supported yet");
+                // TODO authentification
+            }
+
+
+            http::request<http::string_body> reqProxy{http::verb::connect, uri, VERSION};
+            reqProxy.set(http::field::host, dnsdomain);
+            reqProxy.set(http::field::user_agent, "Boost Beast DoH Client");
+            reqProxy.set(http::field::content_type, "application/dns-message");
+
+            http::write(socket, reqProxy);
+
+            http::response<http::empty_body> resProxy;
+            http::parser<false, http::empty_body> http_parser(resProxy);
+            http_parser.skip(true);
+
+            boost::beast::flat_buffer buffer;
+            http::read(socket, buffer, http_parser);
+
+            std::cout << "Target DNS server response: " << resProxy << std::endl;
+        } else {
+            stream.next_layer().connect(dnsEndpoint);
+        }
 
         stream.handshake(ssl::stream_base::handshake_type::client);
 
-        http::request<http::vector_body<std::uint8_t>> req{http::verb::post, uri, VERSION};
-        req.set(http::field::host, dnsdomain);
-        req.set(http::field::user_agent, "Boost Beast DoH Client");
-        req.set(http::field::content_type, "application/dns-message");
-
-        //req.body() = "00 00 01 00 00 01 00 00  00 00 00 00 03 77 77 77 07 65 78 61 6d 70 6c 65 03 63 6f 6d 00 00 01 00 01";
 
         auto headerData = header.data();
         auto queryData = query.data();
 
-        auto& body = req.body();
-        std::copy(headerData.begin(), headerData.end(), std::back_inserter(body));
-        std::copy(queryData.begin(), queryData.end(), std::back_inserter(body));
+        Type type = variables_map["type"].as<Type>();
+        if(type == Type::POST) {
+          http::request<http::vector_body<std::uint8_t>> req{http::verb::post, uri, VERSION};
+          req.set(http::field::host, dnsdomain);
+          req.set(http::field::user_agent, "Boost Beast DoH Client");
+          req.set(http::field::content_type, "application/dns-message");
 
-        req.prepare_payload();
 
-        http::write(stream, req);
+          auto& body = req.body();
+          std::copy(headerData.begin(), headerData.end(), std::back_inserter(body));
+          std::copy(queryData.begin(), queryData.end(), std::back_inserter(body));
+
+          req.prepare_payload();
+          http::write(stream, req);
+
+          std::cout << "Request: " << std::endl;
+          for(auto iter = body.begin(); iter != body.end(); iter++) {
+                std::cout << "0x" << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(*iter) << ' ';
+          }
+          std::cout << std::endl;
+        }
+        else if(type == Type::GET) {
+          auto base64HeaderData = Base64UrlEncode(std::string{headerData.begin(), headerData.end()});
+          auto base64QueryData = Base64UrlEncode(std::string{queryData.begin(), queryData.end()});
+          auto url = uri + "?dns=" + base64HeaderData + base64QueryData;
+
+          http::request<http::vector_body<std::uint8_t>> req{http::verb::get, url, VERSION};
+          req.set(http::field::host, dnsdomain);
+          req.set(http::field::user_agent, "Boost Beast DoH Client");
+          req.set(http::field::content_type, "application/dns-message");
+
+          req.prepare_payload();
+          http::write(stream, req);
+
+          std::cout << "Request: " << std::endl;
+          std::cout << "URI: " << url;
+          std::cout << std::endl;
+
+        }
+
 
         boost::beast::flat_buffer buffer;
         http::response<http::vector_body<std::uint8_t>> res{};
@@ -548,11 +669,6 @@ int main(int argc, char* argv[])
         auto& resBody = res.body();
         std::cout << std::endl;
 
-        std::cout << "Request: " << std::endl;
-        for(auto iter = body.begin(); iter != body.end(); iter++) {
-            std::cout << "0x" << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(*iter) << ' ';
-        }
-        std::cout << std::endl;
         //std::cout << "0x00 0x00 0x01 0x00 0x00 0x01 0x00 0x00 0x00 0x00 0x00 0x00 0x03 0x77 0x77 0x77 0x07 0x65 0x78 0x61 0x6d 0x70 0x6c 0x65 0x03 0x63 0x6f 0x6d 0x00 0x00 0x01 0x00 0x01" << std::endl;
         std::cout << "Response: " << std::endl;
         for(auto iter = resBody.begin(); iter != resBody.end(); iter++) {
@@ -564,7 +680,7 @@ int main(int argc, char* argv[])
         DNSHeader resHeader{};
         std::size_t offset = resHeader.parseData(resBody);
         std::cout << "Number of answers: " << resHeader.numberOfAnswers() << '\n';
-        std::cout << "Response code: " << format_RCODE(resHeader.responseCode()) << '\n';
+        std::cout << "Response code: " << format_RCode(resHeader.responseCode()) << '\n';
 
         DNSQuery resQuery{};
         offset += resQuery.parseData(std::vector<std::uint8_t>(resBody.begin()+offset, resBody.end()));
@@ -575,7 +691,13 @@ int main(int argc, char* argv[])
         std::cout << "TTL: " << std::to_string(resRecord.ttl()) << '\n';
         std::cout << "RData: " << resRecord.rData() << '\n';
 
-        stream.shutdown();
+        boost::system::error_code ec;
+        stream.shutdown(ec);
+        if(ec == boost::asio::error::eof) {
+            ec.assign(0, ec.category());
+        }
+        if(ec)
+            throw boost::system::system_error(ec);
     } catch (const boost::program_options::required_option& e) {
         std::cerr << "Error: Required option '" << e.get_option_name() << "' is missing.\n";
         std::cout << desc << '\n';
