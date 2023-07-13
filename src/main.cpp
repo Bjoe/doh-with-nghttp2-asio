@@ -1,6 +1,3 @@
-#include <boost/beast/core.hpp>
-#include <boost/beast/http.hpp>
-#include <boost/beast/ssl.hpp>
 #include <boost/asio/connect.hpp>
 #include <boost/asio/ip/tcp.hpp>
 #include <iostream>
@@ -53,7 +50,6 @@ BOOST_PP_SEQ_HEAD(elem)                                       \
   return BOOST_PP_STRINGIZE(BOOST_PP_SEQ_HEAD(elem));
 
 namespace ssl = boost::asio::ssl;
-namespace http = boost::beast::http;
 namespace net = boost::asio;
 using namespace nghttp2::asio_http2;
 using namespace nghttp2::asio_http2::client;
@@ -628,6 +624,7 @@ int main(int argc, char* argv[])
 
     sess.on_connect([&sess,
                       &variables_map,
+                      &dnsdomain,
                       &uri,
                       &headerData,
                       &queryData](tcp::resolver::iterator /*endpoint_it*/) {
@@ -642,31 +639,54 @@ int main(int argc, char* argv[])
       } else if(type == Type::GET) {
         auto base64HeaderData = Base64UrlEncode(std::string{headerData.begin(), headerData.end()});
         auto base64QueryData = Base64UrlEncode(std::string{queryData.begin(), queryData.end()});
-        auto url = uri + "?dns=" + base64HeaderData + base64QueryData;
+        auto url = "https://" + dnsdomain + uri + "?dns=" + base64HeaderData + base64QueryData;
 
         req = sess.submit(ec, "GET", url, hmap);
 
-        std::cout << "Request: " << std::endl;
-        std::cout << "URI: " << url;
+        std::cout << "Request: " << '\n';
+        std::cout << "URI: " << url << '\n';
+        std::cout << "Request header:\n";
+        header_map headerMap = req->header();
+        for(const auto& value : headerMap) {
+          std::cout << value.first << ": " << value.second.value << " -> Sensitive: " << value.second.sensitive << '\n';
+        }
         std::cout << std::endl;
       }
+
+      if(ec.failed()) {
+        throw std::runtime_error(ec.message());
+      }
+
       req->on_response([&sess](const response &res) {
-        std::cout << "response received!" << std::endl;
+        std::cout << "Response received!\n";
+        std::cout << "Response header:\n";
+        header_map headerMap = res.header();
+        for(const auto& value : headerMap) {
+          std::cout << value.first << ": " << value.second.value << " -> Sensitive: " << value.second.sensitive << '\n';
+        }
+
         res.on_data([&sess](const uint8_t *data, std::size_t len) {
-          std::cout <<  "Response: ";
+          if(len == 0) {
+            std::cout << "Response body len is ZERO. EOF ?!" << std::endl;
+            return;
+          } else {
+            std::cout << "Response body len " << len << '\n';
+          }
+
+          std::cout <<  "Response body: ";
           std::cout.write(reinterpret_cast<const char *>(data), len);
           std::cout << std::endl;
 
           std::vector<uint8_t> resBody;
-          std::cout << "Response: " << std::endl;
+          std::cout << "Response body in HEX:\n";
           for(std::size_t x{}; x < len; x++) {
             resBody.emplace_back(data[x]);
             std::cout << "0x" << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(data[x]) << ' ';
           }
-          std::cout << std::endl;
 
           //std::cout << "0x00 0x00 0x01 0x00 0x00 0x01 0x00 0x00 0x00 0x00 0x00 0x00 0x03 0x77 0x77 0x77 0x07 0x65 0x78 0x61 0x6d 0x70 0x6c 0x65 0x03 0x63 0x6f 0x6d 0x00 0x00 0x01 0x00 0x01" << std::endl;
 
+          std::cout << "\nDNS response:\n";
           // Process the DNS response here
           DNSHeader resHeader{};
           std::size_t offset = resHeader.parseData(resBody);
@@ -681,11 +701,14 @@ int main(int argc, char* argv[])
           offset += resRecord.parseData(std::vector<std::uint8_t>(resBody.begin()+offset, resBody.end()));
           std::cout << "TTL: " << std::to_string(resRecord.ttl()) << '\n';
           std::cout << "RData: " << resRecord.rData() << '\n';
-
-
+          std::cout << std::endl;
         });
       });
 
+      req->on_close([&sess](uint32_t error_code) {
+        // shutdown session after first request was done.
+        sess.shutdown();
+      });
     });
 
     sess.on_error([](const boost::system::error_code &ec) {
