@@ -636,12 +636,18 @@ int main(int argc, char* argv[])
         const request* req{};
       if(type == Type::POST) {
         req = sess.submit(ec, "POST", uri, hmap);
+        if(ec.failed()) {
+          throw std::runtime_error(ec.message());
+        }
       } else if(type == Type::GET) {
         auto base64HeaderData = Base64UrlEncode(std::string{headerData.begin(), headerData.end()});
         auto base64QueryData = Base64UrlEncode(std::string{queryData.begin(), queryData.end()});
         auto url = "https://" + dnsdomain + uri + "?dns=" + base64HeaderData + base64QueryData;
 
         req = sess.submit(ec, "GET", url, hmap);
+        if(ec.failed()) {
+          throw std::runtime_error(ec.message());
+        }
 
         std::cout << "Request: " << '\n';
         std::cout << "URI: " << url << '\n';
@@ -651,10 +657,6 @@ int main(int argc, char* argv[])
           std::cout << value.first << ": " << value.second.value << " -> Sensitive: " << value.second.sensitive << '\n';
         }
         std::cout << std::endl;
-      }
-
-      if(ec.failed()) {
-        throw std::runtime_error(ec.message());
       }
 
       req->on_response([&sess](const response &res) {
