@@ -4,7 +4,7 @@ cmake_policy(SET CMP0135 NEW)
 
 # Not ideal to use this global variable, but necessary to make sure
 # that tooling and projects use the same version
-set(CMAKE_CXX_STANDARD 14)
+set(CMAKE_CXX_STANDARD 20)
 
 # strongly encouraged to enable this globally to avoid conflicts between
 # -Wpedantic being enabled and -std=c++20 and -std=gnu++20 for example
@@ -130,7 +130,8 @@ add_library(myproject::project_warnings INTERFACE IMPORTED)
 
 find_package(Boost REQUIRED) # COMPONENTS headers program_options thread log) # <- How this can be used in Conan 2.0 ?
 find_package(Microsoft.GSL REQUIRED)
-find_package(OpenSSL REQUIRED)
+#find_package(OpenSSL REQUIRED)
+find_package(Botan REQUIRED)
 find_package(libnghttp2 REQUIRED)
 
 # It'a a dirt hack because of conan 2.0 !

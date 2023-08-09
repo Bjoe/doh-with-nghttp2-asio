@@ -25,7 +25,12 @@
 #include <boost/algorithm/string.hpp>
 #include <boost/algorithm/string/replace.hpp>
 
+#include <botan/asio_stream.h>
+#include <botan/auto_rng.h>
+#include <botan/certstor_system.h>
+#include <botan/tls.h>
 #include <nghttp2/asio_http2_client.h>
+#include "asio_client_session_tls_impl.h"
 
 #define ENUM_CLASS(name, values)                               \
 enum name {                              \
@@ -526,6 +531,19 @@ private:
 
 };
 
+// very basic credentials manager
+class Credentials_Manager : public Botan::Credentials_Manager {
+public:
+  Credentials_Manager() = default;
+
+  std::vector<Botan::Certificate_Store*> trusted_certificate_authorities(const std::string&,
+    const std::string&) override {
+    return {&m_cert_store};
+  }
+
+private:
+  Botan::System_Certificate_Store m_cert_store;
+};
 
 int main(int argc, char* argv[])
 {
@@ -571,56 +589,68 @@ int main(int argc, char* argv[])
     boost::system::error_code ec;
     boost::asio::io_service io_service;
 
-    boost::asio::ssl::context tls(boost::asio::ssl::context::sslv23);
-    tls.set_default_verify_paths();
-    // disabled to make development easier...
-    // tls_ctx.set_verify_mode(boost::asio::ssl::verify_peer);
-    configure_tls_context(ec, tls);
+    std::shared_ptr<Botan::TLS::Context> tlsCtx = std::make_shared<Botan::TLS::Context>(
+      std::make_shared<Credentials_Manager>(),
+      std::make_shared<Botan::AutoSeeded_RNG>(),
+      std::make_shared<Botan::TLS::Session_Manager_Noop>(),
+      std::make_shared<Botan::TLS::Policy>());
+
+    tlsCtx->set_verify_callback([](const std::vector<Botan::X509_Certificate>& cert_chain,
+                                  const std::vector<std::optional<Botan::OCSP::Response>>& ocsp_responses,
+                                  const std::vector<Botan::Certificate_Store*>& trusted_roots,
+                                  Botan::Usage_Type usage,
+                                  std::string_view hostname,
+                                  const Botan::TLS::Policy& policy){
+      std::cout << hostname << std::endl;
+    });
 
     /*        tcp::socket socket{io_service};
             if(variables_map.count("proxy") != 0U) {
                 auto proxy = variables_map["proxy"].as<std::string>();
                 auto pport = variables_map["proxyport"].as<unsigned short>();
 
-             socket.connect({boost::asio::ip::address_v4::from_string(proxy), pport});
-         }
- */
+              socket.connect({boost::asio::ip::address_v4::from_string(proxy), pport});
+          }
+  */
     //        auto dnsEndpoint = boost::asio::ip::tcp::endpoint{boost::asio::ip::address::from_string(dnsip), dnsport};
     /*        if(variables_map.count("proxy") != 0U) {
                 if(variables_map.count("proxyuser")) {
                     //auto user = variables_map["proxyuser"].as<std::string>();
                     //auto psswd = variables_map["proxypasswd"].as<std::string>();
 
-                 throw std::system_error(ENOTSUP, std::generic_category(), "Proxy authentification not supported yet");
-                 // TODO authentification
-             }
+                  throw std::system_error(ENOTSUP, std::generic_category(), "Proxy authentification not supported yet");
+                  // TODO authentification
+              }
 
 
-              http::request<http::string_body> reqProxy{http::verb::connect, uri, VERSION};
-              reqProxy.set(http::field::host, dnsdomain);
-              reqProxy.set(http::field::user_agent, "Boost Beast DoH Client");
-              reqProxy.set(http::field::content_type, "application/dns-message");
+                http::request<http::string_body> reqProxy{http::verb::connect, uri, VERSION};
+                reqProxy.set(http::field::host, dnsdomain);
+                reqProxy.set(http::field::user_agent, "Boost Beast DoH Client");
+                reqProxy.set(http::field::content_type, "application/dns-message");
 
-             http::write(socket, reqProxy);
+              http::write(socket, reqProxy);
 
-              http::response<http::empty_body> resProxy;
-              http::parser<false, http::empty_body> http_parser(resProxy);
-              http_parser.skip(true);
+                http::response<http::empty_body> resProxy;
+                http::parser<false, http::empty_body> http_parser(resProxy);
+                http_parser.skip(true);
 
-             boost::beast::flat_buffer buffer;
-             http::read(socket, buffer, http_parser);
+              boost::beast::flat_buffer buffer;
+              http::read(socket, buffer, http_parser);
 
-              std::cout << "Target DNS server response: " << resProxy << std::endl;
-          } else {
-              stream.next_layer().connect(dnsEndpoint);
-          }
-  */
+                std::cout << "Target DNS server response: " << resProxy << std::endl;
+            } else {
+                stream.next_layer().connect(dnsEndpoint);
+            }
+    */
 
     auto headerData = header.data();
     auto queryData = query.data();
 
 
-    session sess(io_service, tls, dnsip, std::to_string(dnsport));
+    std::shared_ptr<session_impl> impl = std::make_shared<doh::session_tls_impl>(
+      io_service, tlsCtx, dnsip, std::to_string(dnsport), boost::posix_time::seconds(60));
+
+    session sess(impl, dnsip, std::to_string(dnsport));
 
     sess.on_connect([&sess,
                       &variables_map,
@@ -633,15 +663,21 @@ int main(int argc, char* argv[])
       header_map hmap{};
       hmap.insert({"Content-type", {"application/dns-message", false}});
 
-        const request* req{};
+      const request* req{};
       if(type == Type::POST) {
         req = sess.submit(ec, "POST", uri, hmap);
+        if(ec.failed()) {
+          throw std::runtime_error(ec.message());
+        }
       } else if(type == Type::GET) {
         auto base64HeaderData = Base64UrlEncode(std::string{headerData.begin(), headerData.end()});
         auto base64QueryData = Base64UrlEncode(std::string{queryData.begin(), queryData.end()});
         auto url = "https://" + dnsdomain + uri + "?dns=" + base64HeaderData + base64QueryData;
 
         req = sess.submit(ec, "GET", url, hmap);
+        if(ec.failed()) {
+          throw std::runtime_error(ec.message());
+        }
 
         std::cout << "Request: " << '\n';
         std::cout << "URI: " << url << '\n';
@@ -651,10 +687,8 @@ int main(int argc, char* argv[])
           std::cout << value.first << ": " << value.second.value << " -> Sensitive: " << value.second.sensitive << '\n';
         }
         std::cout << std::endl;
-      }
-
-      if(ec.failed()) {
-        throw std::runtime_error(ec.message());
+      } else {
+        std::cerr << "Not send" << std::endl;
       }
 
       req->on_response([&sess](const response &res) {
@@ -684,7 +718,7 @@ int main(int argc, char* argv[])
             std::cout << "0x" << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(data[x]) << ' ';
           }
 
-          //std::cout << "0x00 0x00 0x01 0x00 0x00 0x01 0x00 0x00 0x00 0x00 0x00 0x00 0x03 0x77 0x77 0x77 0x07 0x65 0x78 0x61 0x6d 0x70 0x6c 0x65 0x03 0x63 0x6f 0x6d 0x00 0x00 0x01 0x00 0x01" << std::endl;
+                //std::cout << "0x00 0x00 0x01 0x00 0x00 0x01 0x00 0x00 0x00 0x00 0x00 0x00 0x03 0x77 0x77 0x77 0x07 0x65 0x78 0x61 0x6d 0x70 0x6c 0x65 0x03 0x63 0x6f 0x6d 0x00 0x00 0x01 0x00 0x01" << std::endl;
 
           std::cout << "\nDNS response:\n";
           // Process the DNS response here
