@@ -595,13 +595,14 @@ int main(int argc, char* argv[])
       std::make_shared<Botan::TLS::Session_Manager_Noop>(),
       std::make_shared<Botan::TLS::Policy>());
 
-    tlsCtx->set_verify_callback([](const std::vector<Botan::X509_Certificate>& cert_chain,
-                                  const std::vector<std::optional<Botan::OCSP::Response>>& ocsp_responses,
-                                  const std::vector<Botan::Certificate_Store*>& trusted_roots,
-                                  Botan::Usage_Type usage,
+    tlsCtx->set_verify_callback([](const std::vector<Botan::X509_Certificate>& /*cert_chain*/,
+                                  const std::vector<std::optional<Botan::OCSP::Response>>& /*ocsp_responses*/,
+                                  const std::vector<Botan::Certificate_Store*>& /*trusted_roots*/,
+                                  Botan::Usage_Type /*usage*/,
                                   std::string_view hostname,
-                                  const Botan::TLS::Policy& policy){
+                                  const Botan::TLS::Policy& /*policy*/){
       std::cout << hostname << std::endl;
+      // Just ack any certificate
     });
 
     /*        tcp::socket socket{io_service};
@@ -649,8 +650,8 @@ int main(int argc, char* argv[])
 
     std::shared_ptr<session_impl> impl = std::make_shared<doh::session_tls_impl>(
       io_service, tlsCtx, dnsip, std::to_string(dnsport), boost::posix_time::seconds(60));
-
-    session sess(impl, dnsip, std::to_string(dnsport));
+    impl->start_resolve(dnsip, std::to_string(dnsport));
+    session sess(impl);
 
     sess.on_connect([&sess,
                       &variables_map,
@@ -687,8 +688,6 @@ int main(int argc, char* argv[])
           std::cout << value.first << ": " << value.second.value << " -> Sensitive: " << value.second.sensitive << '\n';
         }
         std::cout << std::endl;
-      } else {
-        std::cerr << "Not send" << std::endl;
       }
 
       req->on_response([&sess](const response &res) {
