@@ -138,7 +138,10 @@ find_package(libnghttp2 REQUIRED)
 set(Boost_thread_FOUND true CACHE BOOL "" FORCE) # <- nghttp2-asion use COMPONENTS but it's not working with conan 2.0 ... How this can be used in Conan 2.0 ?
 set(Boost_system_FOUND true CACHE BOOL "" FORCE) # <- nghttp2-asion use COMPONENTS but it's not working with conan 2.0 ... How this can be used in Conan 2.0 ?
 
-FetchContent_Declare(nghttp2-asio URL https://github.com/nghttp2/nghttp2-asio/archive/refs/heads/main.zip)
+FetchContent_Declare(nghttp2-asio
+    GIT_REPOSITORY https://github.com/Bjoe/nghttp2-asio.git
+    GIT_TAG extend-session
+)
 FetchContent_MakeAvailable(nghttp2-asio)
 
 # configure files based on CMake configuration options
